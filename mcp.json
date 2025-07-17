@@ -3,5 +3,9 @@
   "version": "1.0.0",
   "description": "MCP Server for Jira integration",
   "main": "jira-mcp-server.js",
-  "runtime": "node"
-}
+  "runtime": "docker",
+  "env": [
+    "ATLASSIAN_INSTANCE_URL",
+    "ATLASSIAN_EMAIL",
+    "ATLASSIAN_API_TOKEN"
+  ]
