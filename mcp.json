@@ -1,0 +1,7 @@
+{
+  "name": "jira-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server for Jira integration",
+  "main": "jira-mcp-server.js",
+  "runtime": "node"
+}
