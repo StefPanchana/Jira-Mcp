@@ -1,0 +1,16 @@
+{
+  "name": "jira-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server for Jira integration",
+  "main": "jira-mcp-server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node jira-mcp-server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.15.1"
+  },
+  "bin": {
+    "jira-mcp-server": "jira-mcp-server.js"
+  }
+}
