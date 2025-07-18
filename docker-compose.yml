@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  jira-mcp-service:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - MCP_MODE=service
+    restart: unless-stopped
+    networks:
+      - jira-mcp-network
+
+networks:
+  jira-mcp-network:
+    driver: bridge

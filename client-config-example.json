@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "jira-service": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "--network", "jira-mcp_jira-mcp-network",
+        "-e", "ATLASSIAN_INSTANCE_URL=https://mi-instancia.atlassian.net",
+        "-e", "ATLASSIAN_EMAIL=mi-email@empresa.com",
+        "-e", "ATLASSIAN_API_TOKEN=mi-token-personal",
+        "jira-mcp-server"
+      ]
+    }
+  }
+}

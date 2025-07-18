@@ -7,10 +7,11 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
-// Configuración de Jira desde variables de entorno
-const JIRA_URL = process.env.ATLASSIAN_INSTANCE_URL;
-const EMAIL = process.env.ATLASSIAN_EMAIL;
-const API_TOKEN = process.env.ATLASSIAN_API_TOKEN;
+// Configuración de Jira desde variables de entorno o parámetros del cliente
+let JIRA_URL = process.env.ATLASSIAN_INSTANCE_URL;
+let EMAIL = process.env.ATLASSIAN_EMAIL;
+let API_TOKEN = process.env.ATLASSIAN_API_TOKEN;
+const SERVICE_MODE = process.env.MCP_MODE === 'service';
 
 class JiraMCPServer {
   constructor() {
@@ -410,11 +411,60 @@ class JiraMCPServer {
             },
           },
         },
+        {
+          name: 'delete_jira_issue',
+          description: 'Eliminar un issue o cambiar su estado a Cancelado',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              issue_key: {
+                type: 'string',
+                description: 'Clave del issue a eliminar',
+              },
+              force_delete: {
+                type: 'boolean',
+                description: 'true para eliminar permanentemente, false para cancelar',
+                default: false,
+              },
+            },
+            required: ['issue_key'],
+          },
+        },
+        {
+          name: 'search_user_stories',
+          description: 'Buscar historias de usuario por título o contenido',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project_key: {
+                type: 'string',
+                description: 'Clave del proyecto',
+              },
+              search_text: {
+                type: 'string',
+                description: 'Texto a buscar en título o descripción',
+              },
+              status: {
+                type: 'string',
+                description: 'Filtrar por estado (opcional)',
+              },
+              max_results: {
+                type: 'number',
+                description: 'Número máximo de resultados',
+                default: 20,
+              },
+            },
+            required: ['project_key', 'search_text'],
+          },
+        },
       ],
     }));
 
     // Manejar llamadas a herramientas
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      // Extraer configuración del cliente de los argumentos
+      const clientConfig = this.extractClientConfig(request.params.arguments);
+      
       switch (request.params.name) {
         case 'get_jira_projects':
           return this.getProjects();
@@ -450,15 +500,24 @@ class JiraMCPServer {
           return this.getProjectDetails(request.params.arguments);
         case 'get_user_permissions':
           return this.getUserPermissions(request.params.arguments);
+        case 'delete_jira_issue':
+          return this.deleteIssue(request.params.arguments);
+        case 'search_user_stories':
+          return this.searchUserStories(request.params.arguments);
         default:
           throw new Error(`Herramienta desconocida: ${request.params.name}`);
       }
     });
   }
 
-  async makeJiraRequest(endpoint, method = 'GET', body = null) {
-    const url = `${JIRA_URL}/rest/api/3${endpoint}`;
-    const auth = Buffer.from(`${EMAIL}:${API_TOKEN}`).toString('base64');
+  async makeJiraRequest(endpoint, method = 'GET', body = null, retries = 3, clientConfig = null) {
+    // Usar configuración del cliente si está disponible
+    const jiraUrl = clientConfig?.jiraUrl || JIRA_URL;
+    const email = clientConfig?.email || EMAIL;
+    const apiToken = clientConfig?.apiToken || API_TOKEN;
+    
+    const url = `${jiraUrl}/rest/api/3${endpoint}`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
     
     const options = {
       method,
@@ -473,8 +532,37 @@ class JiraMCPServer {
       options.body = JSON.stringify(body);
     }
 
-    const response = await fetch(url, options);
-    return response.json();
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ message: response.statusText }));
+          throw new Error(`HTTP ${response.status}: ${errorData.message || errorData.errorMessages?.join(', ') || response.statusText}`);
+        }
+        return await response.json();
+      } catch (error) {
+        if (attempt === retries) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+    }
+  }
+
+  async validateProject(projectKey) {
+    try {
+      const project = await this.makeJiraRequest(`/project/${projectKey}`);
+      return { valid: true, project };
+    } catch (error) {
+      return { valid: false, error: error.message };
+    }
+  }
+
+  async getProjectIssueTypes(projectKey) {
+    try {
+      const project = await this.makeJiraRequest(`/project/${projectKey}`);
+      return project.issueTypes || [];
+    } catch (error) {
+      return [];
+    }
   }
 
   async getProjects() {
@@ -708,9 +796,10 @@ class JiraMCPServer {
       
       let fullDescription = description;
       if (acceptance_criteria) {
-        fullDescription += `\n\n*Criterios de Aceptación:*\n${acceptance_criteria}`;
+        fullDescription += `\n\nCriterios de Aceptación:\n${acceptance_criteria}`;
       }
 
+      // Usar estructura idéntica a createIssue
       const storyData = {
         fields: {
           project: { key: project_key },
@@ -718,39 +807,56 @@ class JiraMCPServer {
           description: {
             type: 'doc',
             version: 1,
-            content: [{ type: 'paragraph', content: [{ type: 'text', text: fullDescription }] }]
+            content: [{
+              type: 'paragraph',
+              content: [{ type: 'text', text: fullDescription }]
+            }]
           },
-          issuetype: { name: 'Story' },
-          priority: { name: priority }
+          issuetype: { name: 'Historia' } // Usar directamente 'Historia'
         }
       };
 
-      if (story_points) {
-        storyData.fields.customfield_10016 = story_points; // Story Points field
-      }
-
       const result = await this.makeJiraRequest('/issue', 'POST', storyData);
+      
       return {
-        content: [{ type: 'text', text: `Historia de Usuario creada: ${result.key}` }]
+        content: [{ 
+          type: 'text', 
+          text: `✅ Historia creada: ${result.key}` 
+        }]
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
+        content: [{ type: 'text', text: `❌ Error creando historia: ${error.message}` }],
         isError: true
       };
     }
   }
 
+
   async getUserStories(args) {
     try {
       const { project_key, status, assignee, max_results = 50 } = args;
       
-      let jql = `project = ${project_key} AND issuetype = Story`;
+      // Obtener tipos de historia disponibles
+      const issueTypes = await this.getProjectIssueTypes(project_key);
+      const storyTypes = issueTypes.filter(type => 
+        ['Story', 'Historia', 'User Story'].some(st => type.name.toLowerCase().includes(st.toLowerCase()))
+      );
+      
+      if (storyTypes.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No se encontraron tipos de Historia en este proyecto' }],
+          isError: true
+        };
+      }
+      
+      const typeNames = storyTypes.map(t => `"${t.name}"`).join(',');
+      let jql = `project = ${project_key} AND issuetype in (${typeNames})`;
       if (status) jql += ` AND status = "${status}"`;
       if (assignee) jql += ` AND assignee = "${assignee}"`;
       
       const stories = await this.makeJiraRequest(
-        `/search?jql=${encodeURIComponent(jql)}&maxResults=${max_results}`
+        `/search?jql=${encodeURIComponent(jql)}&maxResults=${max_results}&fields=summary,status,assignee,customfield_10016,created,updated,description,priority`
       );
       
       const simplifiedStories = stories.issues?.map(issue => ({
@@ -759,12 +865,17 @@ class JiraMCPServer {
         status: issue.fields.status.name,
         assignee: issue.fields.assignee?.displayName || 'Sin asignar',
         storyPoints: issue.fields.customfield_10016 || 'No estimado',
-        created: issue.fields.created,
-        updated: issue.fields.updated
+        priority: issue.fields.priority?.name || 'Sin prioridad',
+        created: issue.fields.created?.split('T')[0],
+        updated: issue.fields.updated?.split('T')[0],
+        link: `${JIRA_URL}/browse/${issue.key}`
       }));
       
       return {
-        content: [{ type: 'text', text: JSON.stringify(simplifiedStories, null, 2) }]
+        content: [{ 
+          type: 'text', 
+          text: `Encontradas ${simplifiedStories.length} historias:\n\n${JSON.stringify(simplifiedStories, null, 2)}` 
+        }]
       };
     } catch (error) {
       return {
@@ -953,10 +1064,128 @@ class JiraMCPServer {
     }
   }
 
+  async deleteIssue(args) {
+    try {
+      const { issue_key, force_delete = false } = args;
+      
+      if (force_delete) {
+        await this.makeJiraRequest(`/issue/${issue_key}`, 'DELETE');
+        return {
+          content: [{ type: 'text', text: `✅ Issue ${issue_key} eliminado permanentemente` }]
+        };
+      } else {
+        const transitions = await this.makeJiraRequest(`/issue/${issue_key}/transitions`);
+        const cancelTransition = transitions.transitions.find(t => 
+          ['Cancel', 'Cancelar', 'Cancelled', 'Cancelado'].some(status => 
+            t.name.toLowerCase().includes(status.toLowerCase())
+          )
+        );
+        
+        if (cancelTransition) {
+          await this.makeJiraRequest(`/issue/${issue_key}/transitions`, 'POST', {
+            transition: { id: cancelTransition.id }
+          });
+          return {
+            content: [{ type: 'text', text: `✅ Issue ${issue_key} marcado como Cancelado` }]
+          };
+        } else {
+          return {
+            content: [{ type: 'text', text: `⚠️ No se encontró transición a 'Cancelado'. Use force_delete=true para eliminar permanentemente` }]
+          };
+        }
+      }
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `❌ Error: ${error.message}` }],
+        isError: true
+      };
+    }
+  }
+
+  async searchUserStories(args) {
+    try {
+      const { project_key, search_text, status, max_results = 20 } = args;
+      
+      const issueTypes = await this.getProjectIssueTypes(project_key);
+      const storyTypes = issueTypes.filter(type => 
+        ['Story', 'Historia', 'User Story'].some(st => type.name.toLowerCase().includes(st.toLowerCase()))
+      );
+      
+      if (storyTypes.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No se encontraron tipos de Historia en este proyecto' }],
+          isError: true
+        };
+      }
+      
+      const typeNames = storyTypes.map(t => `"${t.name}"`).join(',');
+      let jql = `project = ${project_key} AND issuetype in (${typeNames}) AND (summary ~ "${search_text}" OR description ~ "${search_text}")`;
+      if (status) jql += ` AND status = "${status}"`;
+      
+      const stories = await this.makeJiraRequest(
+        `/search?jql=${encodeURIComponent(jql)}&maxResults=${max_results}&fields=summary,status,assignee,customfield_10016,created,updated,priority`
+      );
+      
+      const results = stories.issues?.map(issue => ({
+        key: issue.key,
+        summary: issue.fields.summary,
+        status: issue.fields.status.name,
+        assignee: issue.fields.assignee?.displayName || 'Sin asignar',
+        storyPoints: issue.fields.customfield_10016 || 'No estimado',
+        priority: issue.fields.priority?.name || 'Sin prioridad',
+        created: issue.fields.created?.split('T')[0],
+        link: `${JIRA_URL}/browse/${issue_key}`
+      }));
+      
+      return {
+        content: [{ 
+          type: 'text', 
+          text: `🔍 Búsqueda "${search_text}" - ${results.length} resultados:\n\n${JSON.stringify(results, null, 2)}` 
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `❌ Error en búsqueda: ${error.message}` }],
+        isError: true
+      };
+    }
+  }
+
+  extractClientConfig(args) {
+    if (!args) return null;
+    
+    const config = {};
+    if (args.jira_url) config.jiraUrl = args.jira_url;
+    if (args.email) config.email = args.email;
+    if (args.api_token) config.apiToken = args.api_token;
+    
+    // Remover configuración de los argumentos para no interferir
+    delete args.jira_url;
+    delete args.email;
+    delete args.api_token;
+    
+    return Object.keys(config).length > 0 ? config : null;
+  }
+
+  async validateClientConfig(clientConfig) {
+    if (!clientConfig) {
+      if (!JIRA_URL || !EMAIL || !API_TOKEN) {
+        throw new Error('Configuración de Jira requerida: jira_url, email, api_token');
+      }
+      return true;
+    }
+    
+    if (!clientConfig.jiraUrl || !clientConfig.email || !clientConfig.apiToken) {
+      throw new Error('Configuración incompleta: jira_url, email, api_token son requeridos');
+    }
+    
+    return true;
+  }
+
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('Servidor MCP de Jira iniciado');
+    console.error(`Servidor MCP de Jira iniciado - Modo: ${SERVICE_MODE ? 'Servicio Multi-Cliente' : 'Cliente Único'}`);
   }
 }
 
