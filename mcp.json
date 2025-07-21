@@ -1,11 +1,19 @@
 {
   "name": "jira-mcp-server",
   "version": "1.0.0",
-  "description": "MCP Server for Jira integration",
+  "description": "Optimized MCP Server for Jira integration - Production Ready",
   "main": "jira-mcp-server.js",
   "runtime": "docker",
+  "tools": 10,
+  "features": [
+    "issue-management",
+    "hierarchy-support", 
+    "multi-client",
+    "validation"
+  ],
   "env": [
     "ATLASSIAN_INSTANCE_URL",
     "ATLASSIAN_EMAIL",
-    "ATLASSIAN_API_TOKEN"
+    "ATLASSIAN_API_TOKEN",
+    "MCP_MODE"
   ]
