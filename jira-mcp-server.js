@@ -457,6 +457,107 @@ class JiraMCPServer {
             required: ['project_key', 'search_text'],
           },
         },
+        {
+          name: 'link_jira_issues',
+          description: 'Vincular issues existentes con diferentes tipos de relación',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              parent_key: {
+                type: 'string',
+                description: 'Issue padre (ej: QDEVPROJ-20)',
+              },
+              child_key: {
+                type: 'string',
+                description: 'Issue hijo (ej: QDEVPROJ-24)',
+              },
+              link_type: {
+                type: 'string',
+                description: 'Tipo de vínculo',
+                default: 'relates to',
+              },
+            },
+            required: ['parent_key', 'child_key'],
+          },
+        },
+        {
+          name: 'create_subtask_with_parent',
+          description: 'Crear subtarea directamente vinculada a issue padre',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project_key: {
+                type: 'string',
+                description: 'Clave del proyecto',
+              },
+              parent_key: {
+                type: 'string',
+                description: 'Issue padre',
+              },
+              summary: {
+                type: 'string',
+                description: 'Título de la subtarea',
+              },
+              description: {
+                type: 'string',
+                description: 'Descripción de la subtarea',
+              },
+            },
+            required: ['project_key', 'parent_key', 'summary'],
+          },
+        },
+        {
+          name: 'validate_issue_creation',
+          description: 'Validar antes de crear para evitar errores HTTP 400',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project_key: {
+                type: 'string',
+                description: 'Clave del proyecto',
+              },
+              issue_type: {
+                type: 'string',
+                description: 'Tipo de issue a validar',
+              },
+            },
+            required: ['project_key', 'issue_type'],
+          },
+        },
+        {
+          name: 'create_epic_with_stories',
+          description: 'Crear épica con historias vinculadas en una operación',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project_key: {
+                type: 'string',
+                description: 'Clave del proyecto',
+              },
+              epic_summary: {
+                type: 'string',
+                description: 'Título de la épica',
+              },
+              epic_description: {
+                type: 'string',
+                description: 'Descripción de la épica',
+              },
+              stories: {
+                type: 'array',
+                description: 'Array de historias a crear',
+                items: {
+                  type: 'object',
+                  properties: {
+                    summary: { type: 'string' },
+                    description: { type: 'string' },
+                    acceptance_criteria: { type: 'string' }
+                  }
+                }
+              },
+            },
+            required: ['project_key', 'epic_summary', 'stories'],
+          },
+        },
       ],
     }));
 
@@ -504,6 +605,14 @@ class JiraMCPServer {
           return this.deleteIssue(request.params.arguments);
         case 'search_user_stories':
           return this.searchUserStories(request.params.arguments);
+        case 'link_jira_issues':
+          return this.linkJiraIssues(request.params.arguments);
+        case 'create_subtask_with_parent':
+          return this.createSubtaskWithParent(request.params.arguments);
+        case 'validate_issue_creation':
+          return this.validateIssueCreation(request.params.arguments);
+        case 'create_epic_with_stories':
+          return this.createEpicWithStories(request.params.arguments);
         default:
           throw new Error(`Herramienta desconocida: ${request.params.name}`);
       }
@@ -622,17 +731,8 @@ class JiraMCPServer {
       const issueData = {
         fields: {
           project: { key: project_key },
-          summary,
-          description: {
-            type: 'doc',
-            version: 1,
-            content: [
-              {
-                type: 'paragraph',
-                content: [{ type: 'text', text: description }],
-              },
-            ],
-          },
+          summary: this.formatTextForJira(summary),
+          description: this.createADFContent(description),
           issuetype: { name: issue_type },
         },
       };
@@ -642,7 +742,7 @@ class JiraMCPServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(result, null, 2),
+            text: `Issue creado: ${result.key}`,
           },
         ],
       };
@@ -796,23 +896,20 @@ class JiraMCPServer {
       
       let fullDescription = description;
       if (acceptance_criteria) {
-        fullDescription += `\n\nCriterios de Aceptación:\n${acceptance_criteria}`;
+        fullDescription += `\n\n## CRITERIOS DE ACEPTACION\n${acceptance_criteria}`;
       }
 
-      // Usar estructura idéntica a createIssue
+      // Debug: verificar el contenido antes de procesar
+      console.log('Full description:', fullDescription);
+      const adfContent = this.createADFContent(fullDescription);
+      console.log('ADF content:', JSON.stringify(adfContent, null, 2));
+
       const storyData = {
         fields: {
           project: { key: project_key },
-          summary,
-          description: {
-            type: 'doc',
-            version: 1,
-            content: [{
-              type: 'paragraph',
-              content: [{ type: 'text', text: fullDescription }]
-            }]
-          },
-          issuetype: { name: 'Historia' } // Usar directamente 'Historia'
+          summary: this.formatTextForJira(summary),
+          description: adfContent,
+          issuetype: { name: 'Historia' }
         }
       };
 
@@ -821,12 +918,12 @@ class JiraMCPServer {
       return {
         content: [{ 
           type: 'text', 
-          text: `✅ Historia creada: ${result.key}` 
+          text: `Historia creada: ${result.key}` 
         }]
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: `❌ Error creando historia: ${error.message}` }],
+        content: [{ type: 'text', text: `Error creando historia: ${error.message}` }],
         isError: true
       };
     }
@@ -1180,6 +1277,261 @@ class JiraMCPServer {
     }
     
     return true;
+  }
+
+  formatTextForJira(text) {
+    if (!text) return '';
+    
+    return text
+      .replace(/\*\*(.*?)\*\*/g, '$1')  // Eliminar **bold**
+      .replace(/\*(.*?)\*/g, '$1')     // Eliminar *italic*
+      .replace(/^- /gm, '• ')        // Convertir - a bullet
+      .replace(/^# (.*)/gm, '$1')     // Eliminar # headers
+      .replace(/^## (.*)/gm, '$1')    // Eliminar ## headers
+      .replace(/`(.*?)`/g, '$1')      // Eliminar `code`
+      .trim();
+  }
+
+  createADFContent(text) {
+    if (!text) return { type: 'doc', version: 1, content: [] };
+    
+    // Normalizar saltos de línea (manejar cualquier nivel de escape)
+    let normalizedText = text;
+    // Reemplazar cualquier secuencia de \\ seguida de n con \n real
+    while (normalizedText.includes('\\n')) {
+      normalizedText = normalizedText.replace(/\\+n/g, '\n');
+    }
+    const lines = normalizedText.split('\n');
+    const content = [];
+    let currentList = null;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+      
+      if (!trimmedLine) {
+        // Línea vacía - cerrar lista si existe
+        if (currentList) {
+          content.push(currentList);
+          currentList = null;
+        }
+        continue;
+      }
+      
+      // Títulos - verificar orden correcto (## antes que #)
+      if (trimmedLine.startsWith('## ')) {
+        if (currentList) {
+          content.push(currentList);
+          currentList = null;
+        }
+        content.push({
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: trimmedLine.substring(3).trim() }]
+        });
+      } else if (trimmedLine.startsWith('# ')) {
+        if (currentList) {
+          content.push(currentList);
+          currentList = null;
+        }
+        content.push({
+          type: 'heading',
+          attrs: { level: 1 },
+          content: [{ type: 'text', text: trimmedLine.substring(2).trim() }]
+        });
+      } else if (trimmedLine.startsWith('- ')) {
+        // Lista con bullets
+        const listItem = {
+          type: 'listItem',
+          content: [{
+            type: 'paragraph',
+            content: [{ type: 'text', text: trimmedLine.substring(2).trim() }]
+          }]
+        };
+        
+        if (!currentList) {
+          currentList = {
+            type: 'bulletList',
+            content: [listItem]
+          };
+        } else {
+          currentList.content.push(listItem);
+        }
+      } else {
+        // Párrafo normal
+        if (currentList) {
+          content.push(currentList);
+          currentList = null;
+        }
+        
+        const formattedContent = this.parseInlineFormatting(trimmedLine);
+        content.push({
+          type: 'paragraph',
+          content: formattedContent
+        });
+      }
+    }
+    
+    // Agregar lista pendiente
+    if (currentList) {
+      content.push(currentList);
+    }
+    
+    return { type: 'doc', version: 1, content };
+  }
+  
+  parseInlineFormatting(text) {
+    const content = [];
+    let currentText = text;
+    
+    // Procesar **bold**
+    const boldRegex = /\*\*(.*?)\*\*/g;
+    let lastIndex = 0;
+    let match;
+    
+    while ((match = boldRegex.exec(text)) !== null) {
+      // Texto antes del bold
+      if (match.index > lastIndex) {
+        content.push({ type: 'text', text: text.substring(lastIndex, match.index) });
+      }
+      // Texto bold
+      content.push({ type: 'text', text: match[1], marks: [{ type: 'strong' }] });
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Texto restante
+    if (lastIndex < text.length) {
+      content.push({ type: 'text', text: text.substring(lastIndex) });
+    }
+    
+    return content.length > 0 ? content : [{ type: 'text', text }];
+  }
+
+  async linkJiraIssues(args) {
+    try {
+      const { parent_key, child_key, link_type = 'relates to' } = args;
+      
+      const linkData = {
+        type: { name: link_type },
+        inwardIssue: { key: child_key },
+        outwardIssue: { key: parent_key }
+      };
+
+      await this.makeJiraRequest('/issueLink', 'POST', linkData);
+      return {
+        content: [{ type: 'text', text: `✅ Issues vinculados: ${parent_key} -> ${child_key} (${link_type})` }]
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `❌ Error vinculando issues: ${error.message}` }],
+        isError: true
+      };
+    }
+  }
+
+  async createSubtaskWithParent(args) {
+    try {
+      const { project_key, parent_key, summary, description = '' } = args;
+      
+      const parent = await this.makeJiraRequest(`/issue/${parent_key}`);
+      
+      const subtaskData = {
+        fields: {
+          project: { key: project_key },
+          parent: { key: parent_key },
+          summary: this.formatTextForJira(summary),
+          description: this.createADFContent(description),
+          issuetype: { name: 'Sub-task' }
+        }
+      };
+
+      const result = await this.makeJiraRequest('/issue', 'POST', subtaskData);
+      return {
+        content: [{ type: 'text', text: `Subtarea creada: ${result.key} bajo ${parent_key}` }]
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `Error creando subtarea: ${error.message}` }],
+        isError: true
+      };
+    }
+  }
+
+  async validateIssueCreation(args) {
+    try {
+      const { project_key, issue_type } = args;
+      
+      const project = await this.makeJiraRequest(`/project/${project_key}`);
+      const availableTypes = project.issueTypes.map(t => t.name);
+      const isValid = availableTypes.includes(issue_type);
+      
+      return {
+        content: [{ 
+          type: 'text', 
+          text: `Validación ${issue_type}: ${isValid ? '✅ Válido' : '❌ Inválido'}\nTipos disponibles: ${availableTypes.join(', ')}` 
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `❌ Error validando: ${error.message}` }],
+        isError: true
+      };
+    }
+  }
+
+  async createEpicWithStories(args) {
+    try {
+      const { project_key, epic_summary, epic_description = '', stories } = args;
+      
+      // Crear épica
+      const epicData = {
+        fields: {
+          project: { key: project_key },
+          summary: epic_summary,
+          description: {
+            type: 'doc',
+            version: 1,
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: epic_description }] }]
+          },
+          issuetype: { name: 'Epic' }
+        }
+      };
+      
+      const epic = await this.makeJiraRequest('/issue', 'POST', epicData);
+      const createdStories = [];
+      
+      // Crear historias vinculadas
+      for (const story of stories) {
+        const storyData = {
+          fields: {
+            project: { key: project_key },
+            summary: story.summary,
+            description: {
+              type: 'doc',
+              version: 1,
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: story.description || '' }] }]
+            },
+            issuetype: { name: 'Historia' },
+            customfield_10014: epic.key // Epic Link
+          }
+        };
+        
+        const storyResult = await this.makeJiraRequest('/issue', 'POST', storyData);
+        createdStories.push(storyResult.key);
+      }
+      
+      return {
+        content: [{ 
+          type: 'text', 
+          text: `✅ Épica creada: ${epic.key}\n• Historias: ${createdStories.join(', ')}` 
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `❌ Error creando épica: ${error.message}` }],
+        isError: true
+      };
+    }
   }
 
   async run() {
