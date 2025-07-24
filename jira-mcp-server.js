@@ -57,7 +57,7 @@ class JiraMCPServer {
               project_key: { type: 'string' },
               summary: { type: 'string' },
               description: { type: 'string' },
-              issue_type: { type: 'string', default: 'Task' },
+              issue_type: { type: 'string', default: 'Tarea' },
               acceptance_criteria: { type: 'string' }
             },
             required: ['project_key', 'summary']
@@ -86,7 +86,7 @@ class JiraMCPServer {
             properties: {
               parent_key: { type: 'string' },
               child_key: { type: 'string' },
-              link_type: { type: 'string', default: 'relates to' }
+              link_type: { type: 'string', default: 'Relates' }
             },
             required: ['parent_key', 'child_key']
           }
@@ -162,7 +162,8 @@ class JiraMCPServer {
             },
             required: ['issue_key']
           }
-        }
+        },
+
       ]
     }));
 
@@ -180,6 +181,7 @@ class JiraMCPServer {
         case 'validate_issue_creation': return this.validateIssueCreation(request.params.arguments);
         case 'get_project_details': return this.getProjectDetails(request.params.arguments);
         case 'delete_jira_issue': return this.deleteIssue(request.params.arguments);
+
         default: throw new Error(`Herramienta desconocida: ${request.params.name}`);
       }
     });
@@ -295,10 +297,10 @@ class JiraMCPServer {
 
   async createIssue(args) {
     try {
-      const { project_key, summary, description = '', issue_type = 'Task', acceptance_criteria = '' } = args;
+      const { project_key, summary, description = '', issue_type = 'Tarea', acceptance_criteria = '' } = args;
       
       let fullDescription = this.formatTextForJira(description);
-      if (acceptance_criteria && (issue_type === 'Historia' || issue_type === 'Story')) {
+      if (acceptance_criteria && issue_type === 'Historia') {
         fullDescription += `\n\nCRITERIOS DE ACEPTACION:\n${this.formatTextForJira(acceptance_criteria)}`;
       }
 
@@ -339,7 +341,11 @@ class JiraMCPServer {
   // HIERARCHY METHODS
   async linkJiraIssues(args) {
     try {
-      const { parent_key, child_key, link_type = 'relates to' } = args;
+      const { parent_key, child_key, link_type = 'Relates' } = args;
+      
+      // Validar que ambos issues existen
+      await this.makeJiraRequest(`/issue/${parent_key}`);
+      await this.makeJiraRequest(`/issue/${child_key}`);
       
       const linkData = {
         type: { name: link_type },
@@ -348,9 +354,9 @@ class JiraMCPServer {
       };
 
       await this.makeJiraRequest('/issueLink', 'POST', linkData);
-      return { content: [{ type: 'text', text: `✅ Issues vinculados: ${parent_key} -> ${child_key}` }] };
+      return { content: [{ type: 'text', text: `✅ Issues vinculados: ${parent_key} -> ${child_key} (${link_type})` }] };
     } catch (error) {
-      return { content: [{ type: 'text', text: `❌ Error: ${error.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `❌ Error vinculando issues: ${error.message}` }], isError: true };
     }
   }
 
@@ -366,7 +372,7 @@ class JiraMCPServer {
           parent: { key: parent_key },
           summary: this.formatTextForJira(summary),
           description: this.createSimpleADF(description),
-          issuetype: { name: 'Sub-task' }
+          issuetype: { name: 'Subtarea' }
         }
       };
 
@@ -422,6 +428,8 @@ class JiraMCPServer {
       return { content: [{ type: 'text', text: `❌ Error: ${error.message}` }], isError: true };
     }
   }
+
+
 
   // UTILITY METHODS
   async validateIssueCreation(args) {
